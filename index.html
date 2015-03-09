@@ -1,0 +1,486 @@
+
+<html>
+<head>
+    <title>Poinky The Stupid Jelly Ball</title>
+    <script src="js/three.js"></script>
+    <script src="js/stats.js"></script>
+    <script src="js/cannon.js"></script>
+    <script src="js/MarchingCubes.js"></script>
+
+    <script src="js/Tween.js"></script>
+    <script src="js/Sparks.js"></script>
+    <script src="js/CanvasShaders.js"></script>
+    <script src="js/classes/splash.js"></script>
+
+    <script src="js/classes/platform.js"></script>
+    <script src="js/classes/platform_manager.js"></script>
+    <script src="js/classes/Poinky.js"></script>
+
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec3 vNormal;
+        varying vec4 vPosition;
+        varying vec4 vOPosition;
+        varying vec3 vONormal;
+        varying vec3 vU;
+        varying vec3 vEye;
+
+        void main() {
+
+        vOPosition = modelViewMatrix * vec4( position, 1.0 );
+        vec4 LinearPosition=projectionMatrix * vOPosition;
+        float x=LinearPosition.x;
+        float y=LinearPosition.y;
+        float z = LinearPosition.z;
+        if(abs(LinearPosition.x)>100.0){
+        LinearPosition.y-=abs(LinearPosition.x)*2.5-250.0;
+        }
+        if(abs(LinearPosition.x)>80.0){
+        LinearPosition.y-=abs(LinearPosition.x)*2.0-111.01;
+        }
+        else if(abs(LinearPosition.x)>40.0){
+        LinearPosition.y-=abs(LinearPosition.x)-30.0;
+        }
+        else if(abs(LinearPosition.x)>20.0){
+        LinearPosition.y-=abs(LinearPosition.x)*.5-10.0;
+        }
+        gl_Position = LinearPosition;
+
+        vU = normalize( vec3( modelViewMatrix * vec4( position, 1.0 ) ) );
+
+        vPosition = vec4( position, 1.0 );
+        vNormal = normalMatrix * normal;
+        vONormal = normal;
+        }
+    </script>
+    <script type="x-shader/x-vertex" id="fragmentShader">
+
+        uniform sampler2D textureMap;
+        uniform sampler2D normalMap;
+        uniform vec3 color;
+        uniform float normalScale;
+        uniform float texScale;
+        uniform float useSSS;
+        uniform float useScreen;
+
+        varying vec3 vNormal;
+        varying vec4 vPosition;
+        varying vec4 vOPosition;
+        varying vec3 vONormal;
+        varying vec3 vU;
+        varying vec3 vEye;
+
+        float random(vec3 scale,float seed){return fract(sin(dot(gl_FragCoord.xyz+seed,scale))*43758.5453+seed);}
+
+        void main() {
+
+        vec3 n = normalize( vONormal.xyz );
+        vec3 blend_weights = abs( n );
+        blend_weights = ( blend_weights - 0.2 ) * 7.;
+        blend_weights = max( blend_weights, 0. );
+        blend_weights /= ( blend_weights.x + blend_weights.y + blend_weights.z );
+
+        vec2 coord1 = vPosition.yz * texScale;
+        vec2 coord2 = vPosition.zx * texScale;
+        vec2 coord3 = vPosition.xy * texScale;
+
+        vec3 bump1 = texture2D( normalMap, coord1 ).rgb;
+        vec3 bump2 = texture2D( normalMap, coord2 ).rgb;
+        vec3 bump3 = texture2D( normalMap, coord3 ).rgb;
+
+        vec3 blended_bump = bump1 * blend_weights.xxx +
+        bump2 * blend_weights.yyy +
+        bump3 * blend_weights.zzz;
+
+        vec3 tanX = vec3( vNormal.x, -vNormal.z, vNormal.y);
+        vec3 tanY = vec3( vNormal.z, vNormal.y, -vNormal.x);
+        vec3 tanZ = vec3(-vNormal.y, vNormal.x, vNormal.z);
+        vec3 blended_tangent = tanX * blend_weights.xxx +
+        tanY * blend_weights.yyy +
+        tanZ * blend_weights.zzz;
+
+        vec3 normalTex = blended_bump * 2.0 - 1.0;
+        normalTex.xy *= normalScale;
+        normalTex.y *= -1.;
+        normalTex = normalize( normalTex );
+        mat3 tsb = mat3( normalize( blended_tangent ), normalize( cross( vNormal, blended_tangent ) ), normalize( vNormal ) );
+        vec3 finalNormal = tsb * normalTex;
+
+        vec3 r = reflect( normalize( vU ), normalize( finalNormal ) );
+        float m = 2.0 * sqrt( r.x * r.x + r.y * r.y + ( r.z + 1.0 ) * ( r.z + 1.0 ) );
+        vec2 calculatedNormal = vec2( r.x / m + 0.5,  r.y / m + 0.5 );
+
+        vec3 base = texture2D( textureMap, calculatedNormal ).rgb;
+
+        float rim = 1.75 * max( 0., abs( dot( normalize( vNormal ), normalize( -vOPosition.xyz ) ) ) );
+        base += useSSS * color * ( 1. - .75 * rim );
+        base += ( 1. - useSSS ) * 10. * base * color * clamp( 1. - rim, 0., .15 );
+
+        if( useScreen == 1. ) {
+        base = vec3( 1. ) - ( vec3( 1. ) - base ) * ( vec3( 1. ) - base );
+        }
+
+        float nn = .05 * random( vec3( 1. ), length( gl_FragCoord ) );
+        base += vec3( nn );
+
+        gl_FragColor = vec4( base.rgb, 1. );
+
+        }
+
+    </script>
+    <script type="x-shader/x-vertex" id="sphere-vs">
+
+        void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }
+
+    </script>
+    <script type="x-shader/x-vertex" id="sphere-fs">
+
+        uniform vec2 resolution;
+        uniform float noise;
+        uniform vec3 color;
+
+        #define VIG_REDUCTION_POWER 1.
+        #define VIG_BOOST 1.
+
+        float random(vec3 scale,float seed){return fract(sin(dot(gl_FragCoord.xyz+seed,scale))*43758.5453+seed);}
+
+        void main() {
+
+        vec2 center = resolution * 0.5;
+        float vignette = distance( center, gl_FragCoord.xy ) / resolution.x;
+        vignette = VIG_BOOST - vignette * VIG_REDUCTION_POWER;
+
+        float n = noise * ( .5 - random( vec3( 1. ), length( gl_FragCoord ) ) );
+
+        float v = .5 * length( vec2( gl_FragCoord.y / resolution.y, ( 1. - abs( .5 - gl_FragCoord.x / resolution.x ) ) ) );
+        vec3 base = color;
+        base += vec3( pow( v, 2. ) );
+        gl_FragColor = vec4( base * vec3( vignette ) + vec3( n ), 1. );
+
+        }
+
+    </script>
+    <style>
+        body, html {
+            padding: 0;
+            margin: 0;
+        }
+
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 0px;
+            width: 100%;
+            text-align: center;
+            font-size: 40px;
+            color: white;
+            -webkit-text-stroke-width: 1px;
+            -webkit-text-stroke-color: black;
+        }
+
+        #menu {
+            position: absolute;
+            top: 10%;
+            left: 0px;
+            width: 100%;
+            text-align: center;
+            font-size: 40px;
+            color: white;
+            -webkit-text-stroke-width: 1px;
+            -webkit-text-stroke-color: black;
+            display: none;
+        }
+
+        #mute {
+        }
+    </style>
+
+
+</head>
+<body>
+    <audio id="jumpfx" style="display:none;">
+        <source src="sfx/boing.wav" />
+    </audio>
+    <audio id="music" controls="controls" style="display:none;" loop>
+        <source src="sfx/Music.mp3" type="audio/mpeg" />
+    </audio>
+    <div id="score"></div>
+    <div id="menu"></div>
+    <div id="mute"></div>
+    <script>
+        "use strict";
+        var three = THREE;
+        var timeStep = 1.0 / 60.0; // seconds
+        //ThreeJS
+        var scene;
+        var renderer;
+        var camera;
+        //Rendering Materials
+        var platformRenderingMaterial;
+        var poinkyMaterial;
+        var skySphereMaterial;
+        //Cannonjs
+        var world;
+        //physics Materials
+        var groundMaterial;
+        var platformsMaterial;
+        //Marching Cubes
+        var resolution;
+        var effect;
+
+        //poinky
+        var poinky;
+        //stats
+        var stats;
+        //sound effect
+        var jumpfx;
+        var music;
+        //skySphere
+        var skySphere;
+        //platform Manager
+        var manager;
+        //controls
+        var rightPressed;
+        var leftPressed;
+        var highFrameRate = true;
+        var menu;
+
+        function init() {
+            //stats
+            stats = new Stats();
+            stats.domElement.style.position = 'absolute';
+            stats.domElement.style.top = '1px';
+            stats.domElement.style.zIndex = 100;
+            document.body.appendChild(stats.domElement);
+            //Sound Effect
+            jumpfx = document.getElementById("jumpfx");
+            music = document.getElementById("music");
+            //marching Cubes
+            resolution = 25;
+            effect = new THREE.MarchingCubes(resolution, poinkyMaterial, true, true);
+            effect.position.set(0, 0, 0);
+            effect.scale.set(20, 20, 20);
+            effect.isolation = 60;
+            rightPressed = false;
+            leftPressed = false;
+            startGame();
+            menu = document.getElementById("menu");
+
+        }
+        function initCanon() {
+            world = new CANNON.World();
+            world.gravity.set(0, -200, 0);
+            world.broadphase = new CANNON.NaiveBroadphase();
+            world.solver.iterations = 10;
+        }
+
+        function initPhysicsMaterials() {
+            groundMaterial = new CANNON.Material("groundMaterial");
+            platformsMaterial = new CANNON.Material("platformMaterial");
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            renderer = new three.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMapEnabled = true;
+            renderer.shadowMapSoft = true;
+            document.body.appendChild(renderer.domElement);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 3000);
+            camera.position.set(0, 45, 60);
+            camera.lookAt(scene.position);
+        }
+
+        //this function should be changed to geth the shader from external files
+        function LoadShaders() {
+            platformRenderingMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    textureMap: { type: 't', value: THREE.ImageUtils.loadTexture('images/platforms.jpg') },
+                    normalMap: { type: 't', value: null },
+                    normalScale: { type: 'f', value: 1 },
+                    texScale: { type: 'f', value: 5 },
+                    useSSS: { type: 'f', value: 1 },
+                    useScreen: { type: 'f', value: 0 },
+                    color: { type: 'c', value: new THREE.Color(18. / 255., 72. / 255., 85. / 255.) }
+                },
+                vertexShader: document.getElementById('vertexShader').textContent,
+                fragmentShader: document.getElementById('fragmentShader').textContent,
+                side: THREE.FrontSide
+            });
+            platformRenderingMaterial.uniforms.normalScale.value = .5;
+            platformRenderingMaterial.uniforms.texScale.value = 10;
+            platformRenderingMaterial.uniforms.useSSS.value = .15;
+            platformRenderingMaterial.uniforms.useScreen.value = .3;
+            platformRenderingMaterial.uniforms.textureMap.value.wrapS = platformRenderingMaterial.uniforms.textureMap.value.wrapT = THREE.ClampToEdgeWrapping;
+            platformRenderingMaterial.uniforms.normalMap.value = THREE.ImageUtils.loadTexture('images/normal.jpg');
+            platformRenderingMaterial.uniforms.normalMap.value.wrapS = platformRenderingMaterial.uniforms.normalMap.value.wrapT = THREE.RepeatWrapping;
+
+            poinkyMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    textureMap: { type: 't', value: null },
+                    normalMap: { type: 't', value: null },
+                    normalScale: { type: 'f', value: 1 },
+                    texScale: { type: 'f', value: 5 },
+                    useSSS: { type: 'f', value: 1 },
+                    useScreen: { type: 'f', value: 0 },
+                    color: { type: 'c', value: new THREE.Color(18. / 255., 72. / 255., 85. / 255.) }
+                },
+                vertexShader: document.getElementById('vertexShader').textContent,
+                fragmentShader: document.getElementById('fragmentShader').textContent,
+                side: THREE.FrontSide
+            });
+            poinkyMaterial.uniforms.normalScale.value = .5;
+            poinkyMaterial.uniforms.texScale.value = 10;
+            poinkyMaterial.uniforms.useSSS.value = .15;
+            poinkyMaterial.uniforms.useScreen.value = .3;
+
+
+            poinkyMaterial.uniforms.textureMap.value = THREE.ImageUtils.loadTexture('images/poinky.jpg');
+            poinkyMaterial.uniforms.textureMap.value.wrapS = poinkyMaterial.uniforms.textureMap.value.wrapT = THREE.ClampToEdgeWrapping;
+
+            //sky sphere
+            skySphereMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    resolution: { type: 'v2', value: new THREE.Vector2(0, 0) },
+                    noise: { type: 'f', value: .04 },
+                    color: { type: 'c', value: new THREE.Color(18. / 255., 72. / 255., 85. / 255.) }
+                },
+                vertexShader: document.getElementById('sphere-vs').textContent,
+                fragmentShader: document.getElementById('sphere-fs').textContent,
+                side: THREE.DoubleSide
+            });
+            skySphereMaterial.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+
+        }
+
+        function startGame() {
+
+            music.pause();
+            music.play();
+            //Create Poinky
+            poinky = new Poinky(-9, 5, effect, world, jumpfx);
+            poinky.onJump = function () {
+                manager.scrollPlatforms();
+                //create particles
+                if (highFrameRate)
+                    (new Splash(poinky.baseBall.position.x, poinky.baseBall.position.y, poinky.baseBall.position.z, scene)).start();
+            };
+            poinky.onDeath = function () {
+                menu.style.display = "block";
+                score.style.display = "none";
+                menu.innerHTML = "your score is</br>" + poinky.score + "</br> <button type='button' onclick='reset();'>Restart</button>";
+            }
+
+        }
+
+        function reset() {
+            menu.style.display = "none";
+            score.style.display = "block";
+            manager.reset();
+            poinky.reset();
+            location.reload();
+        }
+
+        function populateScene() {
+            //var horizon = new THREE.MarchingCubes(24, new THREE.MeshBasicMaterial(), true, true);
+            //horizon.position.set(0, 0, 0);
+            //horizon.scale.set(400, 20, 300);
+            //horizon.addPlaneY(2, 12);
+            var horizon = new three.Mesh(new three.BoxGeometry(1, 1, 1, 30), poinkyMaterial);
+            horizon.scale.set(200, 3, 400);
+            horizon.position.y = -12;
+            //Fill scene
+            scene.add(horizon);
+            scene.add(effect);
+            scene.add(camera);
+            scene.add(skySphere);
+        }
+
+        initThree();
+        LoadShaders();
+        initCanon();
+        initPhysicsMaterials();
+        init();
+
+        var ground = new CANNON.Body({ mass: 0, material: groundMaterial });
+        ground.addShape(new CANNON.Plane());
+        ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+        ground.position.set(0, -85, 0);
+        world.add(ground);
+        // Adjust constraint equation parameters for ground/poinky contact
+        var groundPoinkyContact = new CANNON.ContactMaterial(groundMaterial, poinky.material, {
+            friction: 1,
+            restitution: 0.4,
+            contactEquationStiffness: 1e8,
+            contactEquationRegularizationTime: 3,
+            frictionEquationStiffness: 1e13,
+            frictionEquationRegularizationTime: 3,
+        });
+        world.addContactMaterial(groundPoinkyContact);
+
+        // Adjust constraint equation parameters for paltform/poinky contact
+        var platformPoinkyContact = new CANNON.ContactMaterial(platformsMaterial, poinky.material, {
+            friction: 1,
+            restitution: 0.4,
+            contactEquationStiffness: 1e8,
+            contactEquationRegularizationTime: 3,
+            frictionEquationStiffness: 1e13,
+            frictionEquationRegularizationTime: 3,
+        });
+        world.addContactMaterial(platformPoinkyContact);
+        skySphere = new THREE.Mesh(new THREE.IcosahedronGeometry(3000, 1), skySphereMaterial);
+        manager = new PlatformManager(50, 350, world, platformPoinkyContact, scene, poinkyMaterial);
+
+        populateScene();
+        requestAnimationFrame(render);
+        function update() {
+            if (rightPressed)
+                manager.movePlatforms(-2.2);
+            if (leftPressed)
+                manager.movePlatforms(2.2);
+            poinky.update();
+            if (poinky.score != score.innerText) {
+                score.innerText = poinky.score;
+            }
+            if (parseInt(stats.domElement.innerText) < 50) highFrameRate = false;
+            world.step(timeStep);
+            stats.update();
+            manager.update();
+        };
+        function render() {
+            requestAnimationFrame(render);
+            update();
+            effect.reset();
+            effect.addPlaneY(3.5, 12);
+            poinky.draw();
+            manager.draw();
+            renderer.render(scene, camera);
+        };
+
+        document.onkeydown = function (key) {
+            switch (key.keyCode) {
+                case 37:
+                    rightPressed = true;
+                    break;
+                case 39:
+                    leftPressed = true;
+                    break;
+            }
+
+        };
+
+        document.onkeyup = function (key) {
+            switch (key.keyCode) {
+                case 37:
+                    rightPressed = false;
+                    break;
+                case 39:
+                    leftPressed = false;
+                    break;
+            }
+        };
+    </script>
+
+</body>
+</html>
